@@ -3,6 +3,9 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "./interface/IPriceOracle.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 struct Auction {
     address seller;
@@ -16,16 +19,24 @@ struct Auction {
     bool exists;
 }
 
-contract AuctionMarket {
+contract AuctionMarket is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     uint256 private auctionIdCounter;
     mapping(uint256 => Auction) private auctionsById;
     mapping(address => uint256) public pendingWithdrawals;
     IPriceOracle public priceOracle;
 
-    constructor(address _priceOracle) {
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address _priceOracle) public initializer {
         require(_priceOracle != address(0), "Invalid price oracle address");
+        __Ownable_init(msg.sender);
         priceOracle = IPriceOracle(_priceOracle);
     }
+
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     event AuctionCreated(
         uint256 indexed auctionId,
