@@ -20,7 +20,7 @@ describe("AuctionMarket", function () {
         // 不使用UUPS部署方式
         // const auctionMarket = await ethers.deployContract("AuctionMarket", [await priceOracle.getAddress()]);
         // 使用UUPS部署方式
-        const AuctionMarket = await ethers.getContractFactory("AuctionMarket");
+        const AuctionMarket = await ethers.getContractFactory("AuctionMarket", seller);
         const auctionMarket = await upgradesApi.deployProxy(AuctionMarket, [await priceOracle.getAddress()], { initializer: "initialize", kind: "uups" });
         await auctionMarket.waitForDeployment();
         const nft = await ethers.deployContract("AuctionNFT", []);
@@ -249,5 +249,67 @@ describe("AuctionMarket", function () {
         await expect(auctionMarketAsBidder.withdraw()).to.be.revertedWith(
             "No funds to withdraw",
         );
+    });
+
+    it("should upgrade to V2 and preserve state", async function () {
+        const {
+            seller,
+            priceOracle,
+            auctionMarket,
+            auctionId,
+        } = await createAuctionFixture();
+
+        const proxyAddress = await auctionMarket.getAddress();
+        const auctionBefore = await auctionMarket.getAuction(auctionId);
+
+        const AuctionMarketV2 =
+            await ethers.getContractFactory("AuctionMarketV2");
+
+        const upgraded = await upgradesApi.upgradeProxy(
+            proxyAddress,
+            AuctionMarketV2,
+            { kind: "uups" },
+        );
+
+        await upgraded.waitForDeployment();
+
+        expect(await upgraded.getAddress()).to.equal(proxyAddress);
+        expect(await upgraded.version()).to.equal(2n);
+        expect(await upgraded.owner()).to.equal(seller.address);
+        expect(await upgraded.priceOracle()).to.equal(
+            await priceOracle.getAddress(),
+        );
+
+        const auctionAfter = await upgraded.getAuction(auctionId);
+
+        expect(auctionAfter.seller).to.equal(auctionBefore.seller);
+        expect(auctionAfter.nft).to.equal(auctionBefore.nft);
+        expect(auctionAfter.tokenId).to.equal(auctionBefore.tokenId);
+        expect(auctionAfter.startPrice).to.equal(
+            auctionBefore.startPrice,
+        );
+    });
+
+    it("should reject upgrades from a non-owner", async function () {
+        const { bidder, auctionMarket } = await deployFixture();
+
+        const AuctionMarketV2AsBidder =
+            await ethers.getContractFactory(
+                "AuctionMarketV2",
+                bidder,
+            );
+
+        await expect(
+            upgradesApi.upgradeProxy(
+                await auctionMarket.getAddress(),
+                AuctionMarketV2AsBidder,
+                { kind: "uups" },
+            ),
+        )
+            .to.be.revertedWithCustomError(
+                auctionMarket,
+                "OwnableUnauthorizedAccount",
+            )
+            .withArgs(bidder.address);
     });
 });
