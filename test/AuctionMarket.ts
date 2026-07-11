@@ -1,21 +1,21 @@
 import { expect } from "chai";
 import { network } from "hardhat"
 
-const { ethers } = await network.connect();
+const { ethers, networkHelpers } = await network.connect();
 
 const FEED_DECIMALS = 8;
 const FEED_INITIAL_ANSWER = 3000n * 10n ** BigInt(FEED_DECIMALS);
 
 describe("AuctionMarket", function () {
     async function deployFixture() {
-        const [seller, bidder] = await ethers.getSigners();
+        const [seller, bidder, bidder2] = await ethers.getSigners();
 
         const mockFeed = await ethers.deployContract("MockV3Aggregator", [FEED_DECIMALS, FEED_INITIAL_ANSWER]);
         const priceOracle = await ethers.deployContract("PriceOracle", [await mockFeed.getAddress()]);
 
         const auctionMarket = await ethers.deployContract("AuctionMarket", [await priceOracle.getAddress()]);
         const nft = await ethers.deployContract("AuctionNFT", []);
-        return { seller, bidder, mockFeed, priceOracle, auctionMarket, nft };
+        return { seller, bidder, bidder2, mockFeed, priceOracle, auctionMarket, nft };
     }
 
     async function createAuctionFixture() {
@@ -23,13 +23,31 @@ describe("AuctionMarket", function () {
         const startPrice = ethers.parseEther("1");
         const duration = 3600;
         const auctionId = 0n;
-        const { seller, bidder, mockFeed, priceOracle, auctionMarket, nft } = await deployFixture();
+        const { seller, bidder, bidder2, mockFeed, priceOracle, auctionMarket, nft } = await deployFixture();
         const nftAsSeller = nft.connect(seller) as typeof nft;
         const auctionMarketAsSeller = auctionMarket.connect(seller) as typeof auctionMarket;
         await nftAsSeller.mint(seller.address);
         await nftAsSeller.approve(await auctionMarket.getAddress(), tokenId);
-        await auctionMarketAsSeller.createAuction(await nft.getAddress(), tokenId, startPrice, duration);
-        return { seller, bidder, mockFeed, priceOracle, auctionMarket, nft, auctionId };
+        const createAuctionTx = await auctionMarketAsSeller.createAuction(
+            await nft.getAddress(),
+            tokenId,
+            startPrice,
+            duration,
+        );
+        return {
+            seller,
+            bidder,
+            bidder2,
+            mockFeed,
+            priceOracle,
+            auctionMarket,
+            nft,
+            auctionId,
+            tokenId,
+            startPrice,
+            duration,
+            createAuctionTx,
+        };
     }
 
     it("should reject an invalid price oracle address", async function () {
@@ -91,5 +109,127 @@ describe("AuctionMarket", function () {
         await expect(
             auctionMarket.getHighestBidUsd(missingAuctionId),
         ).to.be.revertedWith("Auction does not exist");
+    });
+
+    it("should create an auction and transfer the NFT into custody", async function () {
+        const {
+            seller,
+            auctionMarket,
+            nft,
+            auctionId,
+            tokenId,
+            startPrice,
+            createAuctionTx,
+        } = await createAuctionFixture();
+
+        await expect(createAuctionTx)
+            .to.emit(auctionMarket, "AuctionCreated")
+            .withArgs(
+                auctionId,
+                seller.address,
+                await nft.getAddress(),
+                tokenId,
+            );
+        expect(await nft.ownerOf(tokenId)).to.equal(
+            await auctionMarket.getAddress(),
+        );
+
+        const auction = await auctionMarket.getAuction(auctionId);
+        expect(auction.seller).to.equal(seller.address);
+        expect(auction.nft).to.equal(await nft.getAddress());
+        expect(auction.tokenId).to.equal(tokenId);
+        expect(auction.startPrice).to.equal(startPrice);
+    });
+
+    it("should credit the previous bidder after a higher bid", async function () {
+        const { auctionMarket, auctionId, bidder, bidder2 } =
+            await createAuctionFixture();
+        const firstBid = ethers.parseEther("1");
+        const secondBid = ethers.parseEther("1.5");
+
+        await (auctionMarket.connect(bidder) as typeof auctionMarket).bid(
+            auctionId,
+            { value: firstBid },
+        );
+        await (auctionMarket.connect(bidder2) as typeof auctionMarket).bid(
+            auctionId,
+            { value: secondBid },
+        );
+
+        const auction = await auctionMarket.getAuction(auctionId);
+        expect(auction.highestBidder).to.equal(bidder2.address);
+        expect(auction.highestBid).to.equal(secondBid);
+        expect(await auctionMarket.pendingWithdrawals(bidder.address)).to.equal(
+            firstBid,
+        );
+    });
+
+    it("should end an auction with a winning bid", async function () {
+        const {
+            seller,
+            bidder,
+            auctionMarket,
+            nft,
+            auctionId,
+            tokenId,
+            duration,
+        } = await createAuctionFixture();
+        const bidAmount = ethers.parseEther("1.5");
+
+        await (auctionMarket.connect(bidder) as typeof auctionMarket).bid(
+            auctionId,
+            { value: bidAmount },
+        );
+        await expect(auctionMarket.endAuction(auctionId)).to.be.revertedWith(
+            "Auction has not ended yet",
+        );
+
+        await networkHelpers.time.increase(duration);
+        await auctionMarket.endAuction(auctionId);
+
+        expect(await nft.ownerOf(tokenId)).to.equal(bidder.address);
+        expect(await auctionMarket.pendingWithdrawals(seller.address)).to.equal(
+            bidAmount,
+        );
+        await expect(auctionMarket.endAuction(auctionId)).to.be.revertedWith(
+            "Auction already ended",
+        );
+    });
+
+    it("should return the NFT to the seller when there are no bids", async function () {
+        const { seller, auctionMarket, nft, auctionId, tokenId, duration } =
+            await createAuctionFixture();
+
+        await networkHelpers.time.increase(duration);
+        await auctionMarket.endAuction(auctionId);
+
+        expect(await nft.ownerOf(tokenId)).to.equal(seller.address);
+        expect(await auctionMarket.pendingWithdrawals(seller.address)).to.equal(
+            0n,
+        );
+    });
+
+    it("should let an outbid bidder withdraw once", async function () {
+        const { auctionMarket, auctionId, bidder, bidder2 } =
+            await createAuctionFixture();
+        const firstBid = ethers.parseEther("1");
+        const secondBid = ethers.parseEther("1.5");
+        const auctionMarketAsBidder = auctionMarket.connect(
+            bidder,
+        ) as typeof auctionMarket;
+
+        await auctionMarketAsBidder.bid(auctionId, { value: firstBid });
+        await (auctionMarket.connect(bidder2) as typeof auctionMarket).bid(
+            auctionId,
+            { value: secondBid },
+        );
+
+        await auctionMarketAsBidder.withdraw();
+        expect(await auctionMarket.pendingWithdrawals(bidder.address)).to.equal(
+            0n,
+        );
+        await expect(auctionMarketAsBidder.withdraw()).to.be.revertedWith(
+            "No funds to withdraw",
+        );
     });
 });
