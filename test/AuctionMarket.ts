@@ -1,7 +1,11 @@
 import { expect } from "chai";
-import { network } from "hardhat"
+import hre from "hardhat"
+import { upgrades } from "@openzeppelin/hardhat-upgrades";
 
-const { ethers, networkHelpers } = await network.connect();
+
+const connection = await hre.network.connect();
+const { ethers, networkHelpers } = connection;
+const upgradesApi = await upgrades(hre, connection);
 
 const FEED_DECIMALS = 8;
 const FEED_INITIAL_ANSWER = 3000n * 10n ** BigInt(FEED_DECIMALS);
@@ -13,7 +17,12 @@ describe("AuctionMarket", function () {
         const mockFeed = await ethers.deployContract("MockV3Aggregator", [FEED_DECIMALS, FEED_INITIAL_ANSWER]);
         const priceOracle = await ethers.deployContract("PriceOracle", [await mockFeed.getAddress()]);
 
-        const auctionMarket = await ethers.deployContract("AuctionMarket", [await priceOracle.getAddress()]);
+        // 不使用UUPS部署方式
+        // const auctionMarket = await ethers.deployContract("AuctionMarket", [await priceOracle.getAddress()]);
+        // 使用UUPS部署方式
+        const AuctionMarket = await ethers.getContractFactory("AuctionMarket");
+        const auctionMarket = await upgradesApi.deployProxy(AuctionMarket, [await priceOracle.getAddress()], { initializer: "initialize", kind: "uups" });
+        await auctionMarket.waitForDeployment();
         const nft = await ethers.deployContract("AuctionNFT", []);
         return { seller, bidder, bidder2, mockFeed, priceOracle, auctionMarket, nft };
     }
@@ -51,8 +60,17 @@ describe("AuctionMarket", function () {
     }
 
     it("should reject an invalid price oracle address", async function () {
+        const AuctionMarket = await ethers.getContractFactory("AuctionMarket");
+
         await expect(
-            ethers.deployContract("AuctionMarket", [ethers.ZeroAddress]),
+            upgradesApi.deployProxy(
+                AuctionMarket,
+                [ethers.ZeroAddress],
+                {
+                    initializer: "initialize",
+                    kind: "uups",
+                },
+            ),
         ).to.be.revertedWith("Invalid price oracle address");
     });
 
