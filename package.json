@@ -1,5 +1,5 @@
 {
-  "name": "solidity_homework1",
+  "name": "nft-auction-market",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -8,16 +8,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xuefei016/solidity_homework1.git"
+    "url": "git+https://github.com/xuefei016/nft-auction-market.git"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "bugs": {
-    "url": "https://github.com/xuefei016/solidity_homework1/issues"
+    "url": "https://github.com/xuefei016/nft-auction-market/issues"
   },
-  "homepage": "https://github.com/xuefei016/solidity_homework1#readme",
+  "homepage": "https://github.com/xuefei016/nft-auction-market#readme",
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "^4.0.14",
     "@nomicfoundation/hardhat-ignition": "^3.1.8",

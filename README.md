@@ -1,101 +1,125 @@
 # NFT Auction Market
 
-基于 Hardhat 3、Solidity、Chainlink Data Feeds 和 OpenZeppelin UUPS 实现的 ETH NFT 拍卖市场。
+[中文文档](README.zh-CN.md)
 
-项目支持 ERC721 NFT 铸造与拍卖、ETH 出价、美元价格换算、竞拍退款、卖家提款，以及通过 UUPS 代理升级拍卖合约。当前版本仅支持 ETH 出价，不支持 ERC20 支付。
+An ETH NFT auction market built with Hardhat 3, Solidity, Chainlink Data Feeds, and OpenZeppelin UUPS.
 
-## 功能
+The project supports ERC-721 minting and auctions, ETH bidding, USD price conversion, outbid refunds, seller withdrawals, and upgrading the market contract through a UUPS proxy. The current version accepts ETH bids only and does not support ERC-20 payments.
 
-- 铸造和转移 ERC721 NFT。
-- NFT 所有者创建限时拍卖并将 NFT 托管到市场合约。
-- 用户使用 ETH 出价，首次出价不得低于起拍价，后续出价必须更高。
-- 被超价用户通过 pull-payment 模式主动提取退款。
-- 拍卖结束后将 NFT 转给最高出价者，并将拍卖收入计入卖家待提款余额。
-- 无人出价时将 NFT 退回卖家。
-- 使用 Chainlink ETH/USD Feed 实时换算起拍价和最高出价。
-- 使用 UUPS 代理保持市场地址不变并升级实现合约。
+Repository: [https://github.com/xuefei016/nft-auction-market](https://github.com/xuefei016/nft-auction-market)
 
-## 合约结构
+```bash
+git clone https://github.com/xuefei016/nft-auction-market
+```
+
+## Features
+
+- Mint and transfer ERC-721 NFTs.
+- NFT owners create time-limited auctions and transfer the NFT into market custody.
+- Bidders place bids in ETH. The first bid must be at least the starting price, and later bids must be strictly higher.
+- The seller cannot bid on their own auction.
+- Outbid users withdraw refunds themselves through a pull-payment pattern.
+- After an auction ends, the NFT is transferred to the highest bidder and the proceeds are credited to the seller's pending withdrawal balance.
+- If there are no bids, the NFT is returned to the seller.
+- Starting prices and highest bids can be converted to USD in real time with a Chainlink ETH/USD feed.
+- The market address stays the same across upgrades through a UUPS proxy.
+
+USD values are for display only. The winning bid is always decided by the ETH amount.
+
+## Contract overview
+
+| Contract | Description |
+|---|---|
+| `AuctionNFT.sol` | ERC-721 test NFT (`AuctionNFT` / `ANFT`) with a public `mint(address)` function |
+| `AuctionMarket.sol` | Auction market V1: custody, bidding, settlement, withdrawals, USD helpers, and UUPS upgrade authorization |
+| `AuctionMarketV2.sol` | V2 implementation that inherits V1 and adds `version()` for upgrade verification |
+| `PriceOracle.sol` | Reads a Chainlink ETH/USD feed and converts ETH amounts to USD |
+| `interface/IPriceOracle.sol` | Price oracle interface used by the market |
+| `mock/MockV3Aggregator.sol` | Thin wrapper around Chainlink's mock aggregator for tests |
+
+The `Counter` contracts, `test/Counter.ts`, `ignition/modules/Counter.ts`, and `scripts/send-op-tx.ts` are leftover Hardhat template samples and are not part of the NFT auction flow.
+
+## Project structure
 
 ```text
 contracts/
-├── AuctionNFT.sol                    # ERC721 测试 NFT
-├── AuctionMarket.sol                 # 拍卖市场 V1 与 UUPS 升级逻辑
-├── AuctionMarketV2.sol               # 增加 version() 的升级验证版本
-├── PriceOracle.sol                   # Chainlink ETH/USD 价格读取与换算
-├── interface/IPriceOracle.sol        # 价格预言机接口
-└── mock/MockV3Aggregator.sol         # Chainlink Feed 测试包装合约
+├── AuctionNFT.sol                    # ERC-721 test NFT
+├── AuctionMarket.sol                 # Auction market V1 and UUPS upgrade logic
+├── AuctionMarketV2.sol               # Upgrade verification version that adds version()
+├── PriceOracle.sol                   # Chainlink ETH/USD price reads and conversion
+├── interface/IPriceOracle.sol        # Price oracle interface
+└── mock/MockV3Aggregator.sol         # Chainlink feed mock used in tests
 
 scripts/
-├── deploy.ts                         # Sepolia 部署脚本
-└── upgrade.ts                        # UUPS V2 升级脚本
+├── deploy.ts                         # Sepolia deployment script
+└── upgrade.ts                        # UUPS V2 upgrade script
 
 test/
-├── AuctionMarket.ts                  # 拍卖、预言机集成和升级测试
-└── PriceOracle.ts                    # Chainlink 价格与精度测试
+├── AuctionMarket.ts                  # Auction, oracle integration, and upgrade tests
+└── PriceOracle.ts                    # Chainlink price and decimal conversion tests
 ```
 
-仓库中的 `Counter` 文件是 Hardhat 初始化模板示例，不属于 NFT 拍卖业务。
+## Auction flow
 
-## 拍卖流程
+1. A user calls `AuctionNFT.mint()` to mint an NFT.
+2. The NFT owner approves `AuctionMarket` to transfer the NFT.
+3. The owner calls `createAuction()`, and the NFT is transferred into market custody.
+4. Bidders call `bid()` and send ETH.
+5. When a new highest bid is placed, the previous bid is credited to the earlier bidder's `pendingWithdrawals`.
+6. After the auction expires, anyone can call `endAuction()` to settle it.
+7. Sellers and outbid users call `withdraw()` to pull funds.
 
-1. 用户调用 `AuctionNFT.mint()` 铸造 NFT。
-2. NFT 所有者授权 `AuctionMarket` 操作 NFT。
-3. 所有者调用 `createAuction()`，NFT 转入市场合约托管。
-4. 竞拍者调用 `bid()` 并发送 ETH。
-5. 新的最高出价产生后，旧出价计入原竞拍者的 `pendingWithdrawals`。
-6. 拍卖到期后，任何人都可以调用 `endAuction()` 完成结算。
-7. 卖家和被超价用户调用 `withdraw()` 提取资金。
+`bid()` always ranks bids by ETH amount. USD values are for display only and do not decide the winner.
 
-`bid()` 始终按照 ETH 数量决定最高出价。美元价值仅用于展示，不参与胜负判断。
+## Chainlink price conversion
 
-## Chainlink 价格换算
+`PriceOracle` reads the ETH/USD price through `AggregatorV3Interface.latestRoundData()` and checks that:
 
-`PriceOracle` 通过 `AggregatorV3Interface.latestRoundData()` 读取 ETH/USD 价格，并检查：
+- The returned price is greater than 0.
+- `updatedAt` is greater than 0.
+- The update time is not later than the current block time.
 
-- 返回价格必须大于 0。
-- `updatedAt` 必须大于 0。
-- 更新时间不能晚于当前区块时间。
-
-Chainlink ETH/USD Feed 通常使用 8 位精度，ETH 金额使用 18 位精度：
+Chainlink ETH/USD feeds typically use 8 decimals, while ETH amounts use 18 decimals:
 
 ```text
 usdValue = ethAmount × ethUsdPrice ÷ 10^feedDecimals
 ```
 
-换算结果使用 18 位精度。例如 ETH 价格为 3000 USD 时，`1 ether` 对应 `3000 × 10^18`。
+The converted value uses 18 decimals. For example, when ETH is priced at 3000 USD, `1 ether` corresponds to `3000 × 10^18`.
 
-## UUPS 升级
+## UUPS upgrades
 
-`AuctionMarket` 继承：
+`AuctionMarket` inherits:
 
 - `Initializable`
 - `OwnableUpgradeable`
 - `UUPSUpgradeable`
 
-初始化通过代理调用 `initialize(priceOracle)` 完成。实现合约构造函数调用 `_disableInitializers()`，防止实现合约被单独初始化。
+Initialization runs through the proxy via `initialize(priceOracle)`. The implementation constructor calls `_disableInitializers()` so the implementation cannot be initialized on its own.
 
-升级权限由以下函数限制为 owner：
+Upgrade authorization is restricted to the owner:
 
 ```solidity
 function _authorizeUpgrade(address) internal override onlyOwner {}
 ```
 
-V2 继承 V1，仅增加 `version()`。升级后代理地址、owner、价格预言机地址和已有拍卖数据均保持不变。
+V2 inherits V1 and only adds `version()`. After an upgrade, the proxy address, owner, price oracle address, and existing auction data remain unchanged.
 
-## 安装
+## Installation
 
 ```bash
+git clone https://github.com/xuefei016/nft-auction-market
+cd nft-auction-market
 npm install
 ```
 
-复制环境变量模板：
+Copy the environment template:
 
 ```bash
 cp .env.example .env
 ```
 
-填写 `.env`：
+Fill in `.env`:
 
 ```dotenv
 SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_API_KEY
@@ -103,57 +127,57 @@ SEPOLIA_PRIVATE_KEY=0xYOUR_PRIVATE_KEY
 AUCTION_MARKET_PROXY=0xYOUR_PROXY_ADDRESS
 ```
 
-`.env` 已被 Git 忽略，请勿提交真实 RPC 凭证或私钥。
+`.env` is gitignored. Do not commit real RPC credentials or private keys.
 
-## 编译与测试
+## Compile and test
 
 ```bash
 npx hardhat compile
 npx hardhat test
 ```
 
-生成覆盖率报告：
+Generate a coverage report:
 
 ```bash
 npx hardhat --coverage test
 ```
 
-HTML 报告生成在 `coverage/html/index.html`。
+The HTML report is written to `coverage/html/index.html`.
 
-### 测试覆盖率
+### Test coverage
 
-本项目包含 23 个 TypeScript 测试，覆盖拍卖生命周期、退款和提款、Chainlink 换算、实时价格更新、UUPS 升级、状态保留和升级权限。
+The existing project README states that this project includes 23 TypeScript tests covering the auction lifecycle, refunds and withdrawals, Chainlink conversion, live price updates, UUPS upgrades, state retention, and upgrade permissions. The coverage figures below are copied from that README.
 
-| 合约 | Statements | Lines |
+| Contract | Statements | Lines |
 |---|---:|---:|
 | `AuctionMarket.sol` | 98/100 (98%) | 98/100 (98%) |
 | `AuctionMarketV2.sol` | 1/1 (100%) | 1/1 (100%) |
 | `AuctionNFT.sol` | 3/3 (100%) | 3/3 (100%) |
 | `PriceOracle.sol` | 10/10 (100%) | 10/10 (100%) |
 | `Counter.sol` | 5/5 (100%) | 5/5 (100%) |
-| **总计** | **117/119 (98.31%)** | **117/119 (98.31%)** |
+| **Total** | **117/119 (98.31%)** | **117/119 (98.31%)** |
 
-Hardhat 当前报告中的 Branches 和 Functions 为 `0/0`，因此测试报告以 Statements 和 Lines 为准。
+Hardhat currently reports Branches and Functions as `0/0`, so the test report uses Statements and Lines.
 
-## Sepolia 部署
+## Sepolia deployment
 
-Chainlink Sepolia ETH/USD Feed：
+Chainlink Sepolia ETH/USD feed:
 
 ```text
 0x694AA1769357215DE4FAC081bf1f309aDC325306
 ```
 
-执行部署：
+Deploy with:
 
 ```bash
 npx hardhat run scripts/deploy.ts --network sepolia
 ```
 
-部署脚本会依次部署 `PriceOracle`、`AuctionNFT` 和 `AuctionMarket` UUPS 代理，并输出代理与实现合约地址。
+The deploy script deploys `PriceOracle`, `AuctionNFT`, and the `AuctionMarket` UUPS proxy in order, then prints the proxy and implementation addresses. It only runs on Sepolia (chain ID 11155111).
 
-### 已部署地址
+### Deployed addresses
 
-| 合约 | Sepolia 地址 |
+| Contract | Sepolia address |
 |---|---|
 | PriceOracle | [`0x1aa8A498275100857D918377e47e33ae4bC031FB`](https://sepolia.etherscan.io/address/0x1aa8A498275100857D918377e47e33ae4bC031FB) |
 | AuctionNFT | [`0x7312BBabACFF52dFF7Fc391843Fc7cd1AAa511d4`](https://sepolia.etherscan.io/address/0x7312BBabACFF52dFF7Fc391843Fc7cd1AAa511d4) |
@@ -161,38 +185,38 @@ npx hardhat run scripts/deploy.ts --network sepolia
 | AuctionMarket V1 Implementation | [`0xE0eb5c4584C401593F63666D4Cb19376f8E3269A`](https://sepolia.etherscan.io/address/0xE0eb5c4584C401593F63666D4Cb19376f8E3269A) |
 | AuctionMarket V2 Implementation | [`0x9278AF65CfB40b4CeF4C2421Fd7dDeF1Ac293EC8`](https://sepolia.etherscan.io/address/0x9278AF65CfB40b4CeF4C2421Fd7dDeF1Ac293EC8) |
 
-应用和用户应始终使用 `AuctionMarket Proxy` 地址。实现地址会随着升级变化。
+Applications and users should always use the `AuctionMarket Proxy` address. Implementation addresses change when the contract is upgraded.
 
-## 执行升级
+## Upgrading
 
-确认 `.env` 中的 `AUCTION_MARKET_PROXY` 是已部署的代理地址，然后运行：
+Confirm that `AUCTION_MARKET_PROXY` in `.env` is the deployed proxy address, then run:
 
 ```bash
 npx hardhat run scripts/upgrade.ts --network sepolia
 ```
 
-脚本会检查：
+The script checks that:
 
-- 当前网络是 Sepolia。
-- 代理地址有效。
-- 执行账户是代理 owner。
-- 代理是否已经升级到 V2。
+- The current network is Sepolia.
+- The proxy address is valid.
+- The executing account is the proxy owner.
+- The proxy has not already been upgraded to V2.
 
-升级完成后会输出升级前后实现地址，并确认 `version()` 返回 `2`。
+After a successful upgrade it prints the previous and new implementation addresses and confirms that `version()` returns `2`.
 
-OpenZeppelin 的 `.openzeppelin/sepolia.json` 保存代理和实现合约部署记录，不包含私钥，应保留并提交。
+OpenZeppelin's `.openzeppelin/sepolia.json` stores proxy and implementation deployment records. It does not contain private keys and should be kept and committed.
 
-## 安全设计
+## Security design
 
-- NFT 在拍卖期间由市场合约托管。
-- 采用 Checks-Effects-Interactions 顺序处理提款。
-- 使用 pull-payment，避免在出价过程中直接向旧竞拍者退款。
-- `ended` 标记防止重复结算。
-- UUPS 升级仅允许 owner 执行。
-- 实现合约禁用初始化器。
-- 预言机拒绝无效价格和无效更新时间。
+- The market contract holds the NFT in custody for the duration of the auction.
+- Withdrawals follow the Checks-Effects-Interactions pattern.
+- Pull-payment is used so bids do not refund previous bidders in the same transaction.
+- The `ended` flag prevents double settlement.
+- Only the owner can authorize a UUPS upgrade.
+- The implementation contract disables initializers.
+- The oracle rejects invalid prices and invalid update timestamps.
 
-## 技术栈
+## Tech stack
 
 - Solidity 0.8.28
 - Hardhat 3
@@ -201,3 +225,7 @@ OpenZeppelin 的 `.openzeppelin/sepolia.json` 保存代理和实现合约部署�
 - OpenZeppelin Hardhat Upgrades 4
 - Chainlink Contracts 1.5
 - Mocha + Chai
+
+## License
+
+MIT
